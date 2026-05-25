@@ -1,118 +1,86 @@
-import tempfile
 import streamlit as st
-from dotenv import load_dotenv
+from io import BytesIO
 
 from langchain_mistralai import (
     ChatMistralAI,
-    MistralAIEmbeddings,
+    MistralAIEmbeddings
 )
 
-from langchain_community.document_loaders import (
-    PyPDFLoader,
-)
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_text_splitters import CharacterTextSplitter
+from langchain_community.vectorstores import FAISS
 
-from langchain_text_splitters import (
-    RecursiveCharacterTextSplitter,
-)
-
-from langchain_community.vectorstores import (
-    Chroma,
-)
-
-from langchain_core.prompts import (
-    ChatPromptTemplate,
-)
-
-load_dotenv()
-
+# ---------- page ----------
 st.set_page_config(
-    page_title="RAG PDF Chat",
+    page_title="AI Chat PDF",
     page_icon="📄",
     layout="wide"
 )
 
-# ---------- UI ----------
-st.title("📄 AI PDF Chat")
-st.caption("Upload a PDF • Ask questions • Get answers fast")
+st.title("📄 AI Chat with PDF")
+st.caption("Upload a PDF and ask questions")
 
-with st.sidebar:
-    st.header("Upload")
-    uploaded_file = st.file_uploader(
-        "Choose PDF",
-        type=["pdf"]
-    )
+# ---------- secrets ----------
+api_key = st.secrets["MISTRAL_API_KEY"]
 
-    st.markdown("---")
-    st.caption(
-        "Powered by Mistral + Chroma"
-    )
+# ---------- upload ----------
+uploaded_file = st.file_uploader(
+    "Upload PDF",
+    type=["pdf"]
+)
 
-
-# ---------- cache ----------
+# ---------- build rag ----------
 @st.cache_resource
 def build_rag(file_bytes):
 
-    # temp save
-    with tempfile.NamedTemporaryFile(
-        delete=False,
-        suffix=".pdf"
-    ) as tmp:
-        tmp.write(file_bytes)
-        path = tmp.name
+    # save temp file
+    with open("temp.pdf", "wb") as f:
+        f.write(file_bytes)
 
-    # load
-    docs = PyPDFLoader(path).load()
+    loader = PyPDFLoader("temp.pdf")
+    docs = loader.load()
 
-    # faster splitter
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,
-        chunk_overlap=100
+    splitter = CharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200
     )
 
-    chunks = splitter.split_documents(
-        docs
+    chunks = splitter.split_documents(docs)
+
+    embeddings = MistralAIEmbeddings(
+        api_key=api_key
     )
 
-    embeddings = MistralAIEmbeddings()
-
-    # in-memory → faster
-    vectorstore = Chroma.from_documents(
-        documents=chunks,
-        embedding=embeddings
+    # FAISS instead of Chroma
+    vectorstore = FAISS.from_documents(
+        chunks,
+        embeddings
     )
 
     retriever = vectorstore.as_retriever(
-        search_type="mmr",
-        search_kwargs={
-            "k": 3,
-            "fetch_k": 6,
-        }
+        search_kwargs={"k": 4}
     )
 
     llm = ChatMistralAI(
-        model="mistral-small-2506"
+        model="mistral-small-2506",
+        api_key=api_key
     )
 
     prompt = ChatPromptTemplate.from_messages(
         [
             (
                 "system",
-                "Answer only from context. "
-                "If missing say I don't know."
+                "Use only provided context. If answer not found say I don't know."
             ),
             (
                 "human",
-                "Context:\n{context}\n\nQuestion:{question}"
+                "context:\n{context}\n\nquestion:{question}"
             )
         ]
     )
 
     return retriever, llm, prompt
-
-
-# ---------- state ----------
-if "messages" not in st.session_state:
-    st.session_state.messages = []
 
 
 # ---------- app ----------
@@ -122,86 +90,25 @@ if uploaded_file:
         uploaded_file.getvalue()
     )
 
-    # old messages
-    for msg in st.session_state.messages:
-        with st.chat_message(
-            msg["role"]
-        ):
-            st.markdown(
-                msg["content"]
-            )
-
-    query = st.chat_input(
-        "Ask about the PDF..."
+    query = st.text_input(
+        "Ask a question"
     )
 
     if query:
 
-        st.session_state.messages.append(
+        docs = retriever.invoke(query)
+
+        context = "\n\n".join(
+            [doc.page_content for doc in docs]
+        )
+
+        final_prompt = prompt.invoke(
             {
-                "role": "user",
-                "content": query
+                "context": context,
+                "question": query
             }
         )
 
-        with st.chat_message("user"):
-            st.markdown(query)
+        response = llm.invoke(final_prompt)
 
-        with st.spinner(
-            "Searching PDF..."
-        ):
-
-            docs = retriever.invoke(
-                query
-            )
-
-            context = "\n\n".join(
-                [
-                    doc.page_content
-                    for doc in docs
-                ]
-            )
-
-            final = prompt.invoke(
-                {
-                    "context": context,
-                    "question": query
-                }
-            )
-
-            response = llm.invoke(
-                final
-            )
-
-            answer = response.content
-
-        st.session_state.messages.append(
-            {
-                "role": "assistant",
-                "content": answer
-            }
-        )
-
-        with st.chat_message(
-            "assistant"
-        ):
-            st.markdown(answer)
-
-            # sources
-            with st.expander(
-                "View source chunks"
-            ):
-                for i, d in enumerate(
-                    docs, 1
-                ):
-                    st.markdown(
-                        f"**Chunk {i}**"
-                    )
-                    st.write(
-                        d.page_content
-                    )
-
-else:
-    st.info(
-        "Upload a PDF to begin"
-    )
+        st.success(response.content)
