@@ -1,12 +1,12 @@
-streamlit==1.45.1
-python-dotenv==1.1.0
+streamlit
+python-dotenv
 
-langchain==0.3.25
-langchain-community==0.3.24
-langchain-text-splitters==0.3.8
-langchain-mistralai==0.2.10
+langchain
+langchain-community
+langchain-text-splitters
+langchain-mistralai
 
-chromadb==0.5.23
-pypdf==5.5.0
+chromadb==0.4.24
+pypdf
 
-protobuf==5.29.4
+protobuf==4.25.3
